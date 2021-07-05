@@ -1,0 +1,12 @@
+[package]
+name = "musicbrainz_rs_demo"
+version = "0.1.0"
+authors = ["Paul Delafosse <paul.delafosse@protonmail.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+iced = { version = "0.3", features = ["image", "tokio"] }
+musicbrainz_rs = { git = "https://github.com/oknozor/musicbrainz_rs", branch = "main"}
+reqwest = "0.11.4"
