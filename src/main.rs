@@ -1,18 +1,19 @@
-use iced::{Application, Clipboard, Column, Command, Container, Element, HorizontalAlignment, image,
-           Image, Length, pick_list, PickList, Row, scrollable, Scrollable, Settings, Text, text_input, TextInput};
-use musicbrainz_rs::entity::{CoverartResponse};
-use musicbrainz_rs::entity::artist::Artist;
-use musicbrainz_rs::entity::release_group::ReleaseGroup;
+use iced::{
+    image, pick_list, scrollable, text_input, Application, Clipboard, Column, Command, Container,
+    Element, HorizontalAlignment, Image, Length, PickList, Row, Scrollable, Settings, Text,
+    TextInput,
+};
+use musicbrainz_rs::entity::artist::{Artist, ArtistSearchQuery};
+use musicbrainz_rs::entity::release_group::{ReleaseGroup, ReleaseGroupSearchQuery};
 use musicbrainz_rs::entity::search::SearchResult;
+use musicbrainz_rs::entity::CoverartResponse;
 use musicbrainz_rs::prelude::*;
 
 mod gui;
 
-
 pub fn main() -> iced::Result {
     App::run(Settings::default())
 }
-
 
 #[derive(Debug)]
 struct App {
@@ -26,20 +27,21 @@ struct State {
     input_value: String,
     pick_list: pick_list::State<SearchSelection>,
     search_kind: SearchSelection,
-    results: Option<SearchResultState>,
+    search_results: Option<SearchResultState>,
 }
 
 #[derive(Debug)]
 enum SearchResultState {
     ArtistResult(SearchResult<Artist>),
-    ReleaseResult(ReleaseWrapper),
+    ReleaseResult(Vec<ReleaseWrapper>),
 }
 
 #[derive(Debug, Clone)]
 enum Message {
     InputChanged(String),
     Selection(SearchSelection),
-    RealeaseGroupFound(Result<ReleaseWrapper, Error>),
+    ReleaseGroupFound(Vec<ReleaseGroup>),
+    CoverArtReceived(ReleaseWrapper),
     Search,
 }
 
@@ -48,7 +50,6 @@ pub enum SearchSelection {
     ArtistSelection,
     ReleaseGroupSelection,
 }
-
 
 impl SearchSelection {
     const ALL: [SearchSelection; 2] = [
@@ -76,7 +77,6 @@ impl From<reqwest::Error> for Error {
     }
 }
 
-
 impl std::fmt::Display for SearchSelection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
@@ -96,48 +96,78 @@ impl Application for App {
     type Flags = ();
 
     fn new(_: Self::Flags) -> (Self, Command<Self::Message>) {
-        (App { state: State::default() }, Command::none())
+        (
+            App {
+                state: State::default(),
+            },
+            Command::none(),
+        )
     }
 
     fn title(&self) -> String {
         "Musicbrainz Browser".to_string()
     }
 
-    fn update(&mut self, message: Self::Message, _clipboard: &mut Clipboard) -> Command<Self::Message> {
+    fn update(
+        &mut self,
+        message: Self::Message,
+        _clipboard: &mut Clipboard,
+    ) -> Command<Self::Message> {
         match message {
             Message::InputChanged(value) => {
                 self.state.input_value = value;
                 Command::none()
             }
-            Message::Search => {
-                match self.state.search_kind {
-                    SearchSelection::ArtistSelection => {
-                        let query = Artist::query_builder()
-                            .artist(&self.state.input_value)
-                            .build();
+            Message::Search => match self.state.search_kind {
+                SearchSelection::ArtistSelection => {
+                    let query = ArtistSearchQuery::query_builder()
+                        .artist(&self.state.input_value)
+                        .build();
 
+                    self.state.search_results = Artist::search(query)
+                        .execute()
+                        .ok()
+                        .map(|result| SearchResultState::ArtistResult(result));
 
-                        self.state.results = Artist::search(query)
-                            .execute()
-                            .ok()
-                            .map(|result| {
-                                SearchResultState::ArtistResult(result)
-                            });
-
-                        Command::none()
-                    }
-                    SearchSelection::ReleaseGroupSelection => {
-                        Command::perform(ReleaseWrapper::search(), Message::RealeaseGroupFound)
-                    }
+                    Command::none()
                 }
-            }
+                SearchSelection::ReleaseGroupSelection => Command::perform(
+                    ReleaseWrapper::search(self.state.input_value.clone()),
+                    Message::ReleaseGroupFound,
+                ),
+            },
             Message::Selection(search_selection) => {
                 self.state.search_kind = search_selection;
                 Command::none()
             }
-            Message::RealeaseGroupFound(release) => {
-                if let Ok(release) = release {
-                    self.state.results = Some(SearchResultState::ReleaseResult(release))
+            Message::ReleaseGroupFound(release) => {
+                let release_search_result: Vec<ReleaseWrapper> = release
+                    .into_iter()
+                    .map(|release| ReleaseWrapper {
+                        release,
+                        coverart: None,
+                    })
+                    .collect();
+
+                let fetch_coverart_commands =
+                    release_search_result.clone().into_iter().map(|release| {
+                        Command::perform(release.get_coverart(), Message::CoverArtReceived)
+                    });
+
+                self.state.search_results =
+                    Some(SearchResultState::ReleaseResult(release_search_result));
+                Command::batch(fetch_coverart_commands)
+            }
+            Message::CoverArtReceived(release_with_coverart) => {
+                if let Some(SearchResultState::ReleaseResult(releases)) =
+                    &mut self.state.search_results
+                {
+                    let release_in_state = releases
+                        .iter_mut()
+                        .find(|r| r.release.id == release_with_coverart.release.id);
+                    if let Some(release_in_state) = release_in_state {
+                        *release_in_state = release_with_coverart;
+                    }
                 }
                 Command::none()
             }
@@ -158,7 +188,7 @@ impl Application for App {
             &self.state.input_value,
             Message::InputChanged,
         )
-            .on_submit(Message::Search);
+        .on_submit(Message::Search);
 
         let title = Text::new("Musicbrainz browser")
             .width(Length::Fill)
@@ -167,14 +197,17 @@ impl Application for App {
             .horizontal_alignment(HorizontalAlignment::Center);
 
         let search_row = Row::new()
-            .push(Container::new(pick_list)
-                .width(Length::FillPortion(1))
-                .height(Length::Fill)
+            .push(
+                Container::new(pick_list)
+                    .width(Length::FillPortion(1))
+                    .height(Length::Fill),
             )
-            .push(Container::new(input)
-                .width(Length::FillPortion(3))
-                .height(Length::Fill)
-            ).height(Length::Units(32));
+            .push(
+                Container::new(input)
+                    .width(Length::FillPortion(3))
+                    .height(Length::Fill),
+            )
+            .height(Length::Units(32));
 
         let content = Column::new()
             .max_width(800)
@@ -182,31 +215,40 @@ impl Application for App {
             .push(title)
             .push(search_row);
 
-        let results = match &self.state.results {
+        let results = match &self.state.search_results {
             Some(SearchResultState::ArtistResult(artists)) => {
-                let rows: Vec<Element<Message>> = artists.entities.iter()
-                    .map(|artist| Container::new(
-                        Row::new()
-                            .push(Text::new(format!("Artist : {}", artist.name)))
-                    ).into())
+                let rows: Vec<Element<Message>> = artists
+                    .entities
+                    .iter()
+                    .map(|artist| {
+                        Container::new(
+                            Row::new().push(Text::new(format!("Artist : {}", artist.name))),
+                        )
+                        .into()
+                    })
                     .collect();
 
                 Column::with_children(rows).into()
             }
-            Some(SearchResultState::ReleaseResult(release)) => {
-                let row = Row::new();
-                let row = if let Some(coverart) = &release.coverart {
-                    row.push(Image::new(coverart.clone()))
-                        .push(Text::new(&release.release.title))
-                } else {
-                    row.push(Text::new(&release.release.title))
-                };
-
-                Column::new().push(row)
+            Some(SearchResultState::ReleaseResult(releases)) => {
+                let rows = releases
+                    .iter()
+                    .map(|release| {
+                        if let Some(coverart) = &release.coverart {
+                            Row::new()
+                                .push(Image::new(coverart.clone()))
+                                .push(Text::new(&release.release.title))
+                                .push(Text::new(&release.release.disambiguation))
+                        } else {
+                            Row::new().push(Text::new(&release.release.title))
+                        }
+                        .into()
+                    })
+                    .collect();
+                Column::with_children(rows)
             }
-            None => Column::new()
+            None => Column::new(),
         };
-
 
         Scrollable::new(&mut self.state.scroll)
             .padding(40)
@@ -223,35 +265,40 @@ struct ReleaseWrapper {
 }
 
 impl ReleaseWrapper {
-    async fn search() -> Result<ReleaseWrapper, Error> {
-        //TODO : Search needs to be implemented in musicbrainz
-        let echoes = ReleaseGroup::fetch()
-            .id("ccdb3c9b-67e8-46f5-803f-026ef815ceea")
-            .execute()
-            .expect("Unable to get release");
+    async fn search(input: String) -> Vec<ReleaseGroup> {
+        ReleaseGroup::search(
+            ReleaseGroupSearchQuery::query_builder()
+                .release(&input)
+                .build(),
+        )
+        .execute()
+        .expect("Failed to query release group")
+        .entities
+    }
 
-        let echoes_coverart = ReleaseGroup::fetch_coverart()
-            .id("ccdb3c9b-67e8-46f5-803f-026ef815ceea")
-            .res_250()
+    async fn get_coverart(self) -> ReleaseWrapper {
+        let coverart = self
+            .release
+            .get_coverart()
             .front()
+            .res_250()
             .execute()
-            .expect("Unable to get cover art");
+            .expect("Unable to get coverart");
 
-        println!("{:?}", echoes_coverart);
-
-        if let CoverartResponse::Url(coverart_url) = echoes_coverart {
-            let bytes = reqwest::get(&coverart_url).await?.bytes().await?;
-            println!("{:?}", bytes);
-            Ok(ReleaseWrapper {
-                release: echoes,
-                coverart: Some(image::Handle::from_memory(bytes.as_ref().to_vec())),
-            })
-        } else {
-            println!("no bytes");
-            Ok(ReleaseWrapper {
-                release: echoes,
-                coverart: None,
-            })
+        match coverart {
+            CoverartResponse::Url(coverart_url) => {
+                let bytes = reqwest::get(&coverart_url)
+                    .await
+                    .expect("Unable to get coverart")
+                    .bytes()
+                    .await
+                    .expect("Unable to get coverart bytes");
+                ReleaseWrapper {
+                    release: self.release.clone(),
+                    coverart: Some(image::Handle::from_memory(bytes.as_ref().to_vec())),
+                }
+            }
+            _ => panic!("todo"),
         }
     }
 }
