@@ -8,7 +8,5 @@ edition = "2018"
 
 [dependencies]
 iced = { version = "0.3", features = ["image", "tokio"] }
-musicbrainz_rs = { git = "https://github.com/oknozor/musicbrainz_rs", branch = "feat/release-groups-search"}
+musicbrainz_rs = { git = "https://github.com/oknozor/musicbrainz_rs"}
 reqwest = "0.11.4"
-async-std = "1.6.5"
-async-process = "1.0.1"
